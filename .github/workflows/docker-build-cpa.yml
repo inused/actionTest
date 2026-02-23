@@ -1,0 +1,247 @@
+name: Docker Build and Push CPA
+
+on:
+  schedule:
+    - cron: "0 */12 * * *"
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: "构建哪个仓库的镜像, 留空则两个都构建"
+        required: false
+        type: choice
+        options:
+          - ""
+          - "CLIProxyAPIPlus"
+          - "CLIProxyAPI"
+      cpa_plus_version:
+        description: "CLIProxyAPIPlus 版本, 留空自动获取最新版"
+        required: false
+        type: string
+      cpa_version:
+        description: "CLIProxyAPI 版本, 留空自动获取最新版"
+        required: false
+        type: string
+      architecture:
+        description: "构建哪个架构的镜像, 留空则构建 amd64+arm64 多架构"
+        required: false
+        type: choice
+        options:
+          - ""
+          - "linux/amd64"
+          - "linux/arm64"
+
+env:
+  REGISTRY: ghcr.io
+  CPA_REPO: router-for-me/CLIProxyAPI
+  CPA_PLUS_REPO: router-for-me/CLIProxyAPIPlus
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout self repo
+        uses: actions/checkout@v4
+
+      ###########################################################################
+      # 生成 Dockerfile（你仓库中不会存在 Dockerfile）
+      ###########################################################################
+      - name: Generate Dockerfile
+        run: |
+          cat > Dockerfile << 'EOF'
+          FROM alpine:latest
+
+          WORKDIR /app
+
+          RUN apk add --no-cache ca-certificates tzdata \
+              && mkdir -p /app/datas
+
+          ARG APP_NAME
+          ARG TARGETARCH
+
+          RUN case "$APP_NAME" in \
+                "cpa") BIN_NAME="cli-proxy-api" ;; \
+                "cpa-plus") BIN_NAME="cli-proxy-api-plus" ;; \
+                *) echo "未知 APP_NAME: $APP_NAME" && exit 1 ;; \
+              esac \
+              && cp "/workspace/bin/${TARGETARCH}/${BIN_NAME}" "/app/${BIN_NAME}" \
+              && ln -s "/app/${BIN_NAME}" /app/app-binary
+
+          COPY config.yaml /app/datas/config.yaml
+
+          RUN ln -s /app/datas/config.yaml /app/config.yaml \
+              && chmod +x /app/app-binary
+
+          EXPOSE 8317
+
+          CMD ["/app/app-binary"]
+          EOF
+
+      ###########################################################################
+      # 选择构建哪个仓库
+      ###########################################################################
+      - name: Decide target repos
+        id: target
+        run: |
+          repo="${{ inputs.repository }}"
+          if [ -z "$repo" ]; then
+            echo "build_cpa=true" >> $GITHUB_OUTPUT
+            echo "build_cpa_plus=true" >> $GITHUB_OUTPUT
+          elif [ "$repo" = "CLIProxyAPI" ]; then
+            echo "build_cpa=true" >> $GITHUB_OUTPUT
+          elif [ "$repo" = "CLIProxyAPIPlus" ]; then
+            echo "build_cpa_plus=true" >> $GITHUB_OUTPUT
+          fi
+
+      ###########################################################################
+      # 选择构建架构
+      ###########################################################################
+      - name: Prepare platforms
+        id: platform
+        run: |
+          arch="${{ inputs.architecture }}"
+          if [ -z "$arch" ]; then
+            echo "platforms=linux/amd64,linux/arm64" >> $GITHUB_OUTPUT
+          else
+            echo "platforms=$arch" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up QEMU
+        if: ${{ steps.platform.outputs.platforms != 'linux/amd64' }}
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      ###########################################################################
+      # 生成 config.yaml
+      ###########################################################################
+      - name: Create config.yaml
+        run: |
+          curl -sSL -o config.yaml "https://github.com/router-for-me/CLIProxyAPI/raw/refs/heads/main/config.example.yaml"
+          sed -i \
+            -e 's/^host:.*/host: "0.0.0.0"/' \
+            -e 's/^\( *\)allow-remote:.*/\1allow-remote: true/' \
+            -e 's/^\( *\)secret-key:.*/\1secret-key: "abcdefg"/' \
+            -e 's#^\( *\)auth-dir:.*#\1auth-dir: "/app/datas/cli-proxy-api"#' \
+            config.yaml
+
+      ###########################################################################
+      # 准备 bin 目录
+      ###########################################################################
+      - name: Prepare bin directory
+        run: mkdir -p bin/amd64 bin/arm64
+
+      ###########################################################################
+      # 下载 CLIProxyAPIPlus
+      ###########################################################################
+      - name: Download CLIProxyAPIPlus
+        id: cpa_plus
+        if: ${{ steps.target.outputs.build_cpa_plus == 'true' }}
+        run: |
+          set -e
+          REPO="${{ env.CPA_PLUS_REPO }}"
+          VERSION="${{ inputs.cpa_plus_version }}"
+
+          if [ -z "$VERSION" ]; then
+            release=$(curl -s "https://api.github.com/repos/$REPO/releases/latest")
+          else
+            release=$(curl -s "https://api.github.com/repos/$REPO/releases/tags/$VERSION")
+            if echo "$release" | grep -q '"message": "Not Found"'; then
+              echo "CLIProxyAPIPlus 不存在版本 $VERSION"
+              exit 1
+            fi
+          fi
+
+          TAG=$(echo "$release" | jq -r '.tag_name')
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+          for arch in amd64 arm64; do
+            asset=$(echo "$release" | jq -r ".assets[] | select(.name | contains(\"_linux_${arch}\")) | .browser_download_url")
+            file="plus_${arch}.tar.gz"
+            curl -sSL -o "$file" "$asset"
+            mkdir -p tmp_plus_$arch
+            tar -xzf "$file" -C tmp_plus_$arch
+            cp tmp_plus_$arch/cli-proxy-api-plus bin/$arch/cli-proxy-api-plus
+          done
+
+      ###########################################################################
+      # 下载 CLIProxyAPI
+      ###########################################################################
+      - name: Download CLIProxyAPI
+        id: cpa
+        if: ${{ steps.target.outputs.build_cpa == 'true' }}
+        run: |
+          set -e
+          REPO="${{ env.CPA_REPO }}"
+          VERSION="${{ inputs.cpa_version }}"
+
+          if [ -z "$VERSION" ]; then
+            release=$(curl -s "https://api.github.com/repos/$REPO/releases/latest")
+          else
+            release=$(curl -s "https://api.github.com/repos/$REPO/releases/tags/$VERSION")
+            if echo "$release" | grep -q '"message": "Not Found"'; then
+              echo "CLIProxyAPI 不存在版本 $VERSION"
+              exit 1
+            fi
+          fi
+
+          TAG=$(echo "$release" | jq -r '.tag_name')
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+          for arch in amd64 arm64; do
+            asset=$(echo "$release" | jq -r ".assets[] | select(.name | contains(\"_linux_${arch}\")) | .browser_download_url")
+            file="cpa_${arch}.tar.gz"
+            curl -sSL -o "$file" "$asset"
+            mkdir -p tmp_cpa_$arch
+            tar -xzf "$file" -C tmp_cpa_$arch
+            cp tmp_cpa_$arch/cli-proxy-api bin/$arch/cli-proxy-api
+          done
+
+      ###########################################################################
+      # 登录 GHCR
+      ###########################################################################
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      ###########################################################################
+      # 构建 cpa-plus
+      ###########################################################################
+      - name: Build and push cpa-plus
+        if: ${{ steps.target.outputs.build_cpa_plus == 'true' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ steps.platform.outputs.platforms }}
+          push: true
+          build-args: |
+            APP_NAME=cpa-plus
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/cpa-plus:${{ steps.cpa_plus.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/cpa-plus:latest
+
+      ###########################################################################
+      # 构建 cpa
+      ###########################################################################
+      - name: Build and push cpa
+        if: ${{ steps.target.outputs.build_cpa == 'true' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ steps.platform.outputs.platforms }}
+          push: true
+          build-args: |
+            APP_NAME=cpa
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/cpa:${{ steps.cpa.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/cpa:latest
