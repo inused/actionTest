@@ -158,7 +158,7 @@ jobs:
           sed -i \
             -e 's/^host:.*/host: "0.0.0.0"/' \
             -e 's/^\( *\)allow-remote:.*/\1allow-remote: true/' \
-            -e 's/^\( *\)secret-key:.*/\1secret-key: "abcdefg"/' \
+            -e 's/^\( *\)secret-key:.*/\1secret-key: "$2a$10$4tlNu.z8fp4XI4KDts1vTOF0pQcslHKp785KS5NQRTBKfb9sffPs."/' \
             -e 's#^\( *\)auth-dir:.*#\1auth-dir: "/app/datas/cli-proxy-api"#' \
             config.yaml
 
