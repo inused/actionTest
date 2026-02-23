@@ -1,8 +1,8 @@
 name: Docker Build and Push CPA
 
 on:
-  schedule:
-    - cron: "0 */12 * * *"
+  # schedule:
+  #   - cron: "0 */12 * * *"
   workflow_dispatch:
     inputs:
       repository:
@@ -68,7 +68,7 @@ jobs:
                 "cpa-plus") BIN_NAME="cli-proxy-api-plus" ;; \
                 *) echo "未知 APP_NAME: $APP_NAME" && exit 1 ;; \
               esac \
-              && cp "/workspace/bin/${TARGETARCH}/${BIN_NAME}" "/app/${BIN_NAME}" \
+              && cp "/bin/${TARGETARCH}/${BIN_NAME}" "/app/${BIN_NAME}" \
               && ln -s "/app/${BIN_NAME}" /app/app-binary
 
           COPY config.yaml /app/datas/config.yaml
