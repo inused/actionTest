@@ -63,38 +63,54 @@ jobs:
       ###########################################################################
       - name: Generate Dockerfile
         run: |
+          # 入口脚本：首次启动自动初始化配置
+          cat > entrypoint.sh <<'EOF'
+          #!/bin/sh
+          set -e
+
+          # 如果挂载卷中没有配置文件，则复制默认配置
+          if [ ! -f /app/datas/config.yaml ]; then
+              echo "初始化配置文件：将默认配置复制到挂载卷"
+              cp /app/config.default.yaml /app/datas/config.yaml
+          else
+              echo "检测到已有配置文件，跳过初始化"
+          fi
+          ln -s /app/datas/config.yaml /app/config.yaml
+
+          exec /app/app-binary
+          EOF
+
+          # 创建 Dockerfile
           cat > Dockerfile << 'EOF'
           FROM alpine:latest
 
           WORKDIR /app
 
-          RUN apk add --no-cache ca-certificates tzdata \
-              && mkdir -p /app/datas
+          RUN apk add --no-cache ca-certificates tzdata
 
           ARG APP_NAME
           ARG TARGETARCH
 
-          # 将当前架构下的两个二进制都拷贝进镜像
           COPY bin/${TARGETARCH}/cli-proxy-api /app/cli-proxy-api
           COPY bin/${TARGETARCH}/cli-proxy-api-plus /app/cli-proxy-api-plus
+          COPY config.yaml /app/config.default.yaml
+          COPY entrypoint.sh /app/entrypoint.sh
 
-          # 根据 APP_NAME 选择要运行的二进制，建立统一软链接
           RUN case "$APP_NAME" in \
                 "cpa") BIN_NAME="cli-proxy-api" ;; \
                 "cpa-plus") BIN_NAME="cli-proxy-api-plus" ;; \
                 *) echo "未知 APP_NAME: $APP_NAME" && exit 1 ;; \
               esac \
               && ln -s "/app/${BIN_NAME}" /app/app-binary \
-              && chmod +x "/app/${BIN_NAME}"
-
-          COPY config.yaml /app/datas/config.yaml
-
-          RUN ln -s /app/datas/config.yaml /app/config.yaml
+              && chmod +x "/app/${BIN_NAME}" \
+              && mkdir -p /app/datas \
+              && chmod +x /app/entrypoint.sh
 
           EXPOSE 8317
 
-          CMD ["/app/app-binary"]
+          ENTRYPOINT ["/app/entrypoint.sh"]
           EOF
+
 
       ###########################################################################
       # 选择构建哪个仓库
