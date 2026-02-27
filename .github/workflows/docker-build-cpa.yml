@@ -1,19 +1,8 @@
 name: Docker Build and Push CPA
 
 on:
-  # schedule:
-  #   - cron: "0 */12 * * *"
   workflow_dispatch:
     inputs:
-      repository:
-        description: "构建哪个仓库的镜像, 留空则两个都构建"
-        required: false
-        type: choice
-        options:
-          - ""
-          - "CLIProxyAPIPlus"
-          - "CLIProxyAPI"
-
       cpa_plus_version:
         description: "CLIProxyAPIPlus 版本, 留空自动获取最新版"
         required: false
@@ -59,28 +48,70 @@ jobs:
         uses: actions/checkout@v4
 
       ###########################################################################
-      # 生成 Dockerfile（仓库中不存放 Dockerfile）
+      # 生成 entrypoint.sh 和 Dockerfile
       ###########################################################################
-      - name: Generate Dockerfile
+      - name: Generate entrypoint.sh and Dockerfile
         run: |
-          # 入口脚本：首次启动自动初始化配置
-          cat > entrypoint.sh <<'EOF'
+          cat > entrypoint.sh << 'EOF'
           #!/bin/sh
           set -e
 
-          # 如果挂载卷中没有配置文件，则复制默认配置
+          # 初始化配置文件到挂载卷
           if [ ! -f /app/datas/config.yaml ]; then
               echo "初始化配置文件：将默认配置复制到挂载卷"
               cp /app/config.default.yaml /app/datas/config.yaml
           else
               echo "检测到已有配置文件，跳过初始化"
           fi
-          ln -s /app/datas/config.yaml /app/config.yaml
+          ln -sf /app/datas/config.yaml /app/config.yaml
 
-          exec /app/app-binary
+          MODE=""
+          FIRST_ARG="$1"
+
+          normalize_mode() {
+              case "$1" in
+                  cpa|api|cli-proxy-api|"")
+                      echo "cpa"
+                      ;;
+                  cpap|plus|cli-proxy-api-plus)
+                      echo "cpap"
+                      ;;
+                  *)
+                      echo "unknown"
+                      ;;
+              esac
+          }
+
+          if [ -n "$FIRST_ARG" ]; then
+              NM=$(normalize_mode "$FIRST_ARG")
+              if [ "$NM" != "unknown" ]; then
+                  MODE="$NM"
+                  shift
+              fi
+          fi
+
+          if [ -z "$MODE" ] && [ -n "$APP_MODE" ]; then
+              NM=$(normalize_mode "$APP_MODE")
+              if [ "$NM" != "unknown" ]; then
+                  MODE="$NM"
+              fi
+          fi
+
+          if [ -z "$MODE" ]; then
+              MODE="cpa"
+          fi
+
+          echo "启动模式: $MODE"
+
+          if [ "$MODE" = "cpap" ]; then
+              exec /app/cli-proxy-api-plus "$@"
+          else
+              exec /app/cli-proxy-api "$@"
+          fi
           EOF
 
-          # 创建 Dockerfile
+          chmod +x entrypoint.sh
+
           cat > Dockerfile << 'EOF'
           FROM alpine:latest
 
@@ -88,7 +119,6 @@ jobs:
 
           RUN apk add --no-cache ca-certificates tzdata
 
-          ARG APP_NAME
           ARG TARGETARCH
 
           COPY bin/${TARGETARCH}/cli-proxy-api /app/cli-proxy-api
@@ -96,37 +126,15 @@ jobs:
           COPY config.yaml /app/config.default.yaml
           COPY entrypoint.sh /app/entrypoint.sh
 
-          RUN case "$APP_NAME" in \
-                "cpa") BIN_NAME="cli-proxy-api" ;; \
-                "cpa-plus") BIN_NAME="cli-proxy-api-plus" ;; \
-                *) echo "未知 APP_NAME: $APP_NAME" && exit 1 ;; \
-              esac \
-              && ln -s "/app/${BIN_NAME}" /app/app-binary \
-              && chmod +x "/app/${BIN_NAME}" \
-              && mkdir -p /app/datas \
-              && chmod +x /app/entrypoint.sh
+          RUN chmod +x /app/cli-proxy-api \
+              && chmod +x /app/cli-proxy-api-plus \
+              && chmod +x /app/entrypoint.sh \
+              && mkdir -p /app/datas
 
           EXPOSE 8317
 
           ENTRYPOINT ["/app/entrypoint.sh"]
           EOF
-
-
-      ###########################################################################
-      # 选择构建哪个仓库
-      ###########################################################################
-      - name: Decide target repos
-        id: target
-        run: |
-          repo="${{ inputs.repository }}"
-          if [ -z "$repo" ]; then
-            echo "build_cpa=true" >> $GITHUB_OUTPUT
-            echo "build_cpa_plus=true" >> $GITHUB_OUTPUT
-          elif [ "$repo" = "CLIProxyAPI" ]; then
-            echo "build_cpa=true" >> $GITHUB_OUTPUT
-          elif [ "$repo" = "CLIProxyAPIPlus" ]; then
-            echo "build_cpa_plus=true" >> $GITHUB_OUTPUT
-          fi
 
       ###########################################################################
       # 选择构建架构
@@ -173,7 +181,6 @@ jobs:
       ###########################################################################
       - name: Download CLIProxyAPIPlus
         id: cpa_plus
-        if: ${{ steps.target.outputs.build_cpa_plus == 'true' }}
         run: |
           set -e
           REPO="${{ env.CPA_PLUS_REPO }}"
@@ -224,7 +231,6 @@ jobs:
       ###########################################################################
       - name: Download CLIProxyAPI
         id: cpa
-        if: ${{ steps.target.outputs.build_cpa == 'true' }}
         run: |
           set -e
           REPO="${{ env.CPA_REPO }}"
@@ -271,7 +277,26 @@ jobs:
           done
 
       ###########################################################################
-      # 构建前检查（Pre-Build Checks）
+      # 计算最终镜像 TAG
+      ###########################################################################
+      - name: Decide final image tag
+        id: tag
+        run: |
+          set -e
+          CPA_TAG="${{ steps.cpa.outputs.tag }}"
+          CPAP_TAG="${{ steps.cpa_plus.outputs.tag }}"
+
+          if [ "$CPA_TAG" = "$CPAP_TAG" ]; then
+            FINAL_TAG="$CPA_TAG"
+          else
+            FINAL_TAG="${CPA_TAG}-cpa_${CPAP_TAG}-cpap"
+          fi
+
+          echo "final_tag=$FINAL_TAG" >> $GITHUB_OUTPUT
+          echo "最终镜像 TAG: $FINAL_TAG"
+
+      ###########################################################################
+      # 构建前检查
       ###########################################################################
       - name: Pre-Build Checks
         run: |
@@ -292,25 +317,16 @@ jobs:
           echo "=== 检查 bin 目录结构 ==="
           ls -R bin || true
 
-          # 按需检查 cpa-plus
-          if [ "${{ steps.target.outputs.build_cpa_plus }}" = "true" ]; then
-            for arch in amd64 arm64; do
-              if [ ! -f "bin/${arch}/cli-proxy-api-plus" ]; then
-                echo "缺少二进制文件: bin/${arch}/cli-proxy-api-plus"
-                exit 1
-              fi
-            done
-          fi
-
-          # 按需检查 cpa
-          if [ "${{ steps.target.outputs.build_cpa }}" = "true" ]; then
-            for arch in amd64 arm64; do
-              if [ ! -f "bin/${arch}/cli-proxy-api" ]; then
-                echo "缺少二进制文件: bin/${arch}/cli-proxy-api"
-                exit 1
-              fi
-            done
-          fi
+          for arch in amd64 arm64; do
+            if [ ! -f "bin/${arch}/cli-proxy-api" ]; then
+              echo "缺少二进制文件: bin/${arch}/cli-proxy-api"
+              exit 1
+            fi
+            if [ ! -f "bin/${arch}/cli-proxy-api-plus" ]; then
+              echo "缺少二进制文件: bin/${arch}/cli-proxy-api-plus"
+              exit 1
+            fi
+          done
 
       ###########################################################################
       # 登录 GHCR
@@ -323,49 +339,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       ###########################################################################
-      # 检查 GHCR 中是否已存在对应 tag（cpa-plus）
-      ###########################################################################
-      - name: Check GHCR tag for cpa-plus
-        id: check_cpa_plus
-        if: ${{ steps.target.outputs.build_cpa_plus == 'true' }}
-        run: |
-          set -e
-          IMAGE="${{ github.repository_owner }}/cpa-plus"
-          TAG="${{ steps.cpa_plus.outputs.tag }}"
-          STRATEGY="${{ inputs.rebuild_strategy }}"
-
-          echo "检查 GHCR 镜像: $IMAGE:$TAG (策略: $STRATEGY)"
-
-          status=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://ghcr.io/v2/${IMAGE}/manifests/${TAG}")
-
-          if [ "$status" = "200" ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "GHCR 中已存在镜像: $IMAGE:$TAG"
-            if [ "$STRATEGY" = "skip" ]; then
-              echo "根据策略 skip，跳过 cpa-plus 构建"
-              echo "skip_build=true" >> $GITHUB_OUTPUT
-            else
-              echo "根据策略 force，继续构建并覆盖"
-              echo "skip_build=false" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "GHCR 中不存在镜像: $IMAGE:$TAG，将进行构建"
-            echo "skip_build=false" >> $GITHUB_OUTPUT
-          fi
-
-      ###########################################################################
-      # 检查 GHCR 中是否已存在对应 tag（cpa）
+      # 检查 GHCR 中是否已存在对应 tag（单一镜像 cpa）
       ###########################################################################
       - name: Check GHCR tag for cpa
         id: check_cpa
-        if: ${{ steps.target.outputs.build_cpa == 'true' }}
         run: |
           set -e
           IMAGE="${{ github.repository_owner }}/cpa"
-          TAG="${{ steps.cpa.outputs.tag }}"
+          TAG="${{ steps.tag.outputs.final_tag }}"
           STRATEGY="${{ inputs.rebuild_strategy }}"
 
           echo "检查 GHCR 镜像: $IMAGE:$TAG (策略: $STRATEGY)"
@@ -378,7 +359,7 @@ jobs:
             echo "exists=true" >> $GITHUB_OUTPUT
             echo "GHCR 中已存在镜像: $IMAGE:$TAG"
             if [ "$STRATEGY" = "skip" ]; then
-              echo "根据策略 skip，跳过 cpa 构建"
+              echo "根据策略 skip，跳过构建"
               echo "skip_build=true" >> $GITHUB_OUTPUT
             else
               echo "根据策略 force，继续构建并覆盖"
@@ -391,55 +372,27 @@ jobs:
           fi
 
       ###########################################################################
-      # 构建 cpa-plus（若未被 skip）
-      ###########################################################################
-      - name: Build and push cpa-plus
-        if: ${{ steps.target.outputs.build_cpa_plus == 'true' && steps.check_cpa_plus.outputs.skip_build == 'false' }}
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: ${{ steps.platform.outputs.platforms }}
-          push: true
-          build-args: |
-            APP_NAME=cpa-plus
-          tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/cpa-plus:${{ steps.cpa_plus.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/cpa-plus:latest
-
-      ###########################################################################
-      # 构建 cpa（若未被 skip）
+      # 构建并推送 cpa（单一镜像）
       ###########################################################################
       - name: Build and push cpa
-        if: ${{ steps.target.outputs.build_cpa == 'true' && steps.check_cpa.outputs.skip_build == 'false' }}
+        if: ${{ steps.check_cpa.outputs.skip_build == 'false' }}
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           platforms: ${{ steps.platform.outputs.platforms }}
           push: true
-          build-args: |
-            APP_NAME=cpa
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/cpa:${{ steps.cpa.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/cpa:${{ steps.tag.outputs.final_tag }}
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/cpa:latest
 
       ###########################################################################
-      # 构建总结：如果两个仓库都被 skip，则输出提示
+      # 构建总结
       ###########################################################################
       - name: Build Summary
-        if: |
-          (
-            (steps.target.outputs.build_cpa_plus == 'true' && steps.check_cpa_plus.outputs.skip_build == 'true')
-            || steps.target.outputs.build_cpa_plus != 'true'
-          )
-          &&
-          (
-            (steps.target.outputs.build_cpa == 'true' && steps.check_cpa.outputs.skip_build == 'true')
-            || steps.target.outputs.build_cpa != 'true'
-          )
+        if: ${{ steps.check_cpa.outputs.skip_build == 'true' }}
         run: |
           echo "=============================================================="
-          echo "本次构建未执行任何镜像构建："
-          echo "因为策略为 skip 且目标版本均已存在。"
+          echo "本次构建未执行镜像构建："
+          echo "因为策略为 skip 且目标版本已存在。"
           echo "=============================================================="
