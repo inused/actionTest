@@ -39,7 +39,7 @@ env:
   REGISTRY: ghcr.io
   CPA_REPO: router-for-me/CLIProxyAPI
   CPA_PLUS_REPO: router-for-me/CLIProxyAPIPlus
-  CPA_FORK_REPL: Arron196/CLIProxyAPI
+  CPA_FORK_REPO: Arron196/CLIProxyAPI
 
 permissions:
   contents: read
@@ -297,14 +297,14 @@ jobs:
         id: cpa_fork
         run: |
           set -e
-          REPO="${{ env.CPA_REPO }}"
+          REPO="${{ env.CPA_FORK_REPO }}"
           VERSION="${{ inputs.cpa_fork_version }}"
 
           if [ -z "$VERSION" ]; then
-            echo "未指定 CLIProxyAPI 版本，获取最新 release"
+            echo "未指定 CLIProxyAPI Fork 版本，获取最新 release"
             release=$(curl -s "https://api.github.com/repos/$REPO/releases/latest")
           else
-            echo "指定 CLIProxyAPI 版本: $VERSION"
+            echo "指定 CLIProxyAPI Fork 版本: $VERSION"
             release=$(curl -s "https://api.github.com/repos/$REPO/releases/tags/$VERSION")
             if echo "$release" | grep -q '"message": "Not Found"'; then
               echo "源仓库 $REPO 中不存在 tag: $VERSION"
