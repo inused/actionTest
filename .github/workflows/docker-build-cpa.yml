@@ -13,6 +13,11 @@ on:
         required: false
         type: string
 
+      cpa_fork_version:
+        description: "CLIProxyAPI linuxDo BenjaminAaron 的魔改版本, 留空自动获取最新版"
+        required: false
+        type: string
+
       architecture:
         description: "构建哪个架构的镜像, 留空则构建 amd64+arm64 多架构"
         required: false
@@ -34,6 +39,7 @@ env:
   REGISTRY: ghcr.io
   CPA_REPO: router-for-me/CLIProxyAPI
   CPA_PLUS_REPO: router-for-me/CLIProxyAPIPlus
+  CPA_FORK_REPL: Arron196/CLIProxyAPI
 
 permissions:
   contents: read
@@ -70,11 +76,14 @@ jobs:
 
           normalize_mode() {
               case "$1" in
-                  cpa|api|cli-proxy-api|"")
+                  cpa|cli-proxy-api|"")
                       echo "cpa"
                       ;;
-                  cpap|plus|cli-proxy-api-plus)
+                  cpap|cli-proxy-api-plus)
                       echo "cpap"
+                      ;;
+                  cpa-fork|cli-proxy-api-fork)
+                      echo "cpa-fork"
                       ;;
                   *)
                       echo "unknown"
@@ -105,6 +114,8 @@ jobs:
 
           if [ "$MODE" = "cpap" ]; then
               exec /app/cli-proxy-api-plus "$@"
+          elif [ "$MODE" = "cpap" ]; then
+              exec /app/cli-proxy-api-fork "$@"
           else
               exec /app/cli-proxy-api "$@"
           fi
@@ -123,11 +134,13 @@ jobs:
 
           COPY bin/${TARGETARCH}/cli-proxy-api /app/cli-proxy-api
           COPY bin/${TARGETARCH}/cli-proxy-api-plus /app/cli-proxy-api-plus
+          COPY bin/${TARGETARCH}/cli-proxy-api-fork /app/cli-proxy-api-fork
           COPY config.yaml /app/config.default.yaml
           COPY entrypoint.sh /app/entrypoint.sh
 
           RUN chmod +x /app/cli-proxy-api \
               && chmod +x /app/cli-proxy-api-plus \
+              && chmod +x /app/cli-proxy-api-fork \
               && chmod +x /app/entrypoint.sh \
               && mkdir -p /app/datas
 
@@ -276,6 +289,57 @@ jobs:
             cp "tmp_cpa_${arch}/cli-proxy-api" "bin/${arch}/cli-proxy-api"
           done
 
+
+      ###########################################################################
+      # 下载 CLIProxyAPI Fork
+      ###########################################################################
+      - name: Download CLIProxyAPI Fork
+        id: cpa_fork
+        run: |
+          set -e
+          REPO="${{ env.CPA_REPO }}"
+          VERSION="${{ inputs.cpa_fork_version }}"
+
+          if [ -z "$VERSION" ]; then
+            echo "未指定 CLIProxyAPI 版本，获取最新 release"
+            release=$(curl -s "https://api.github.com/repos/$REPO/releases/latest")
+          else
+            echo "指定 CLIProxyAPI 版本: $VERSION"
+            release=$(curl -s "https://api.github.com/repos/$REPO/releases/tags/$VERSION")
+            if echo "$release" | grep -q '"message": "Not Found"'; then
+              echo "源仓库 $REPO 中不存在 tag: $VERSION"
+              exit 1
+            fi
+          fi
+
+          TAG=$(echo "$release" | jq -r '.tag_name')
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "无法从 CLIProxyAPI Fork release 中解析 tag_name"
+            echo "$release"
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+          for arch in amd64 arm64; do
+            asset=$(echo "$release" | jq -r ".assets[] | select(.name | contains(\"_linux_${arch}\")) | .browser_download_url")
+            if [ -z "$asset" ] || [ "$asset" = "null" ]; then
+              echo "未找到 CLIProxyAPI Fork ${arch} 对应的 linux 资产"
+              exit 1
+            fi
+
+            file="cpa_fork_${arch}.tar.gz"
+            curl -sSL -o "$file" "$asset"
+            mkdir -p "tmp_cpa_fork_${arch}"
+            tar -xzf "$file" -C "tmp_cpa_fork_${arch}"
+            if [ ! -f "tmp_cpa_fork_${arch}/cli-proxy-api" ]; then
+              echo "解压后未找到 cli-proxy-api (arch=${arch})"
+              ls -R "tmp_cpa_${arch}" || true
+              exit 1
+            fi
+            cp "tmp_cpa_fork_${arch}/cli-proxy-api" "bin/${arch}/cli-proxy-api-fork"
+          done
+
       ###########################################################################
       # 计算最终镜像 TAG
       ###########################################################################
@@ -285,12 +349,14 @@ jobs:
           set -e
           CPA_TAG="${{ steps.cpa.outputs.tag }}"
           CPAP_TAG="${{ steps.cpa_plus.outputs.tag }}"
+          CPA_FORK_TAG="${{ steps.cpa_fork.outputs.tag }}"
 
           if [ "$CPA_TAG" = "$CPAP_TAG" ]; then
             FINAL_TAG="$CPA_TAG"
           else
-            FINAL_TAG="${CPA_TAG}-cpa_${CPAP_TAG}-cpap"
+            FINAL_TAG="cpa-${CPA_TAG}_cpap-${CPAP_TAG}"
           fi
+          FINAL_TAG="${FINAL_TAG}_cpa_fork-${CPA_FORK_TAG}"
 
           echo "final_tag=$FINAL_TAG" >> $GITHUB_OUTPUT
           echo "最终镜像 TAG: $FINAL_TAG"
