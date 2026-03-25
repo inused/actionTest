@@ -18,15 +18,6 @@ on:
         required: false
         type: string
 
-      architecture:
-        description: "构建哪个架构的镜像, 留空则构建 amd64+arm64 多架构"
-        required: false
-        type: choice
-        options:
-          - ""
-          - "linux/amd64"
-          - "linux/arm64"
-
       rebuild_strategy:
         description: "当 GHCR 中已存在该版本时的处理策略"
         required: true
@@ -216,21 +207,7 @@ jobs:
           ENTRYPOINT ["/app/entrypoint.sh"]
           EOF
 
-      ###########################################################################
-      # 选择构建架构
-      ###########################################################################
-      - name: Prepare platforms
-        id: platform
-        run: |
-          arch="${{ inputs.architecture }}"
-          if [ -z "$arch" ]; then
-            echo "platforms=linux/amd64,linux/arm64" >> $GITHUB_OUTPUT
-          else
-            echo "platforms=$arch" >> $GITHUB_OUTPUT
-          fi
-
       - name: Set up QEMU
-        if: ${{ steps.platform.outputs.platforms != 'linux/amd64' }}
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
@@ -500,7 +477,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: ${{ steps.platform.outputs.platforms }}
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/cpa:${{ steps.releases.outputs.final_tag }}
