@@ -13,10 +13,10 @@ on:
         required: false
         type: string
 
-      cpa_fork_version:
-        description: "CLIProxyAPI linuxDo BenjaminAaron 的魔改版本, 留空自动获取最新版"
-        required: false
-        type: string
+      #cpa_fork_version:
+      #  description: "CLIProxyAPI linuxDo BenjaminAaron 的魔改版本, 留空自动获取最新版"
+      #  required: false
+      #  type: string
 
       rebuild_strategy:
         description: "当 GHCR 中已存在该版本时的处理策略"
@@ -54,16 +54,16 @@ env:
         "target": "cli-proxy-api-plus",
         "mode": "cpap",
         "default": false
-      },
-      {
-        "key": "cpa-fork",
-        "repo": "Arron196/CLIProxyAPI",
-        "input": "cpa_fork_version",
-        "binary": "cli-proxy-api",
-        "target": "cli-proxy-api-fork",
-        "mode": "cpa-fork",
-        "default": false
-      }
+      }#,
+      #{
+      #  "key": "cpa-fork",
+      #  "repo": "Arron196/CLIProxyAPI",
+      #  "input": "cpa_fork_version",
+      #  "binary": "cli-proxy-api",
+      #  "target": "cli-proxy-api-fork",
+      #  "mode": "cpa-fork",
+      #  "default": false
+      #}
     ]
 
 permissions:
