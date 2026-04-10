@@ -54,7 +54,7 @@ env:
         "target": "cli-proxy-api-plus",
         "mode": "cpap",
         "default": false
-      }#,
+      }
       #{
       #  "key": "cpa-fork",
       #  "repo": "Arron196/CLIProxyAPI",
