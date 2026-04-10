@@ -56,15 +56,15 @@ env:
         "default": false
       }
     ]
-      #{
-      #  "key": "cpa-fork",
-      #  "repo": "Arron196/CLIProxyAPI",
-      #  "input": "cpa_fork_version",
-      #  "binary": "cli-proxy-api",
-      #  "target": "cli-proxy-api-fork",
-      #  "mode": "cpa-fork",
-      #  "default": false
-      #}
+  # {
+  #  "key": "cpa-fork",
+  #  "repo": "Arron196/CLIProxyAPI",
+  #  "input": "cpa_fork_version",
+  #  "binary": "cli-proxy-api",
+  #  "target": "cli-proxy-api-fork",
+  #  "mode": "cpa-fork",
+  #  "default": false
+  # }
 
 permissions:
   contents: read
