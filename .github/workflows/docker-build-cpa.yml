@@ -55,6 +55,7 @@ env:
         "mode": "cpap",
         "default": false
       }
+    ]
       #{
       #  "key": "cpa-fork",
       #  "repo": "Arron196/CLIProxyAPI",
@@ -64,7 +65,6 @@ env:
       #  "mode": "cpa-fork",
       #  "default": false
       #}
-    ]
 
 permissions:
   contents: read
