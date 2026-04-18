@@ -1,0 +1,89 @@
+name: Docker Build and Push Caddy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---------------------------------------------------------
+      # 1. 生成 Dockerfile（构建带 Cloudflare 插件的 Caddy）
+      # ---------------------------------------------------------
+      - name: Generate Dockerfile
+        run: |
+          cat > Dockerfile <<'EOF'
+          FROM caddy:2-builder-alpine AS builder
+
+          RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+
+          RUN xcaddy build \
+              # 带有 cloudflare 插件
+              --with github.com/caddy-dns/cloudflare \
+              --output /tmp/caddy
+
+          # 输出版本号用于后续步骤解析
+          RUN /tmp/caddy version > /tmp/caddy_version.txt
+
+          FROM caddy:2-alpine
+          COPY --from=builder /tmp/caddy /usr/bin/caddy
+          EOF
+
+      # ---------------------------------------------------------
+      # 2. 设置 QEMU + Buildx
+      # ---------------------------------------------------------
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ---------------------------------------------------------
+      # 3. 登录 GHCR
+      # ---------------------------------------------------------
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---------------------------------------------------------
+      # 4. 先构建一次（不推送），提取 Caddy 真实版本号
+      # ---------------------------------------------------------
+      - name: Build builder stage to extract version
+        run: |
+          docker build --target builder -t caddy-builder-tmp .
+          docker create --name extract caddy-builder-tmp
+          docker cp extract:/tmp/caddy_version.txt caddy_version.txt
+          docker rm extract
+
+      - name: Parse version
+        id: ver
+        run: |
+          RAW=$(cat caddy_version.txt)
+          # RAW 格式类似：v2.7.6 h1:xxxx
+          VERSION=$(echo "$RAW" | awk '{print $1}' | sed 's/^v//')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected Caddy version: $VERSION"
+
+      # ---------------------------------------------------------
+      # 5. 使用真实版本号构建并推送多架构镜像
+      # ---------------------------------------------------------
+      - name: Build and push final image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/caddy-cloudflare:${{ steps.ver.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/caddy-cloudflare:latest
