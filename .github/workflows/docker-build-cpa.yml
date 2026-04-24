@@ -42,7 +42,7 @@ env:
         "default": true
       },
       {
-        "key": "cpap",
+        "key": "cpab",
         "repo": "router-for-me/CLIProxyAPIBusiness",
         "input": "cpab_version",
         "binary": "cpab",
@@ -303,80 +303,40 @@ jobs:
             done
           done
 
-          # 计算最终镜像 TAG，尽量保持与原逻辑兼容：
-          # - 若存在 cpa 和 cpap：
-          #   - 若 tag 相同：基础 TAG 为该 tag
-          #   - 若 tag 不同：基础 TAG 为 cpa-<CPA_TAG>_cpap-<CPAP_TAG>
-          # - 其他仓库（包括 cpa-fork 和未来新增）统一追加 _<key>-<tag>
-          CPA_TAG=""
-          CPAP_TAG=""
-          if [ -f tag_cpa ]; then
-            CPA_TAG=$(cat tag_cpa)
-          fi
-          if [ -f tag_cpap ]; then
-            CPAP_TAG=$(cat tag_cpap)
-          fi
-
+          # 统一计算 FINAL_TAG
           FINAL_TAG=""
-
-          if [ -n "$CPA_TAG" ] && [ -n "$CPAP_TAG" ]; then
-            if [ "$CPA_TAG" = "$CPAP_TAG" ]; then
-              FINAL_TAG="$CPA_TAG"
+          first=true
+          
+          echo "$REPOS_JSON" | jq -c '.[]' | while read -r item; do
+            key=$(echo "$item" | jq -r '.key')
+            tag_file="tag_${key}"
+            if [ ! -f "$tag_file" ]; then
+              echo "未找到 $key 对应的 tag 文件: $tag_file"
+              exit 1
+            fi
+            tag=$(cat "$tag_file")
+          
+            if $first; then
+              FINAL_TAG="${key}-${tag}"
+              first=false
             else
-              FINAL_TAG="cpa-${CPA_TAG}_cpap-${CPAP_TAG}"
-            fi
-          fi
-
-          # 在已有 FINAL_TAG 基础上追加其他仓库（排除 cpa 和 cpap）
-          if [ -n "$FINAL_TAG" ]; then
-            echo "$REPOS_JSON" | jq -c '.[]' | while read -r item; do
-              key=$(echo "$item" | jq -r '.key')
-              if [ "$key" = "cpa" ] || [ "$key" = "cpap" ]; then
-                continue
-              fi
-              tag_file="tag_${key}"
-              if [ ! -f "$tag_file" ]; then
-                echo "未找到 $key 对应的 tag 文件: $tag_file"
-                exit 1
-              fi
-              tag=$(cat "$tag_file")
               FINAL_TAG="${FINAL_TAG}_${key}-${tag}"
-              echo "$FINAL_TAG" > final_tag_tmp
-            done
-            if [ -f final_tag_tmp ]; then
-              FINAL_TAG=$(cat final_tag_tmp)
             fi
-          else
-            # 不存在 cpa/cpap 的情况：按配置顺序拼接 key-tag
-            first=true
-            echo "$REPOS_JSON" | jq -c '.[]' | while read -r item; do
-              key=$(echo "$item" | jq -r '.key')
-              tag_file="tag_${key}"
-              if [ ! -f "$tag_file" ]; then
-                echo "未找到 $key 对应的 tag 文件: $tag_file"
-                exit 1
-              fi
-              tag=$(cat "$tag_file")
-              if $first; then
-                FINAL_TAG_LOCAL="${key}-${tag}"
-                first=false
-              else
-                FINAL_TAG_LOCAL="${FINAL_TAG_LOCAL}_${key}-${tag}"
-              fi
-              echo "$FINAL_TAG_LOCAL" > final_tag_tmp2
-            done
-            if [ -f final_tag_tmp2 ]; then
-              FINAL_TAG=$(cat final_tag_tmp2)
-            fi
+            echo "$FINAL_TAG" > final_tag_tmp
+          done
+          
+          if [ -f final_tag_tmp ]; then
+            FINAL_TAG=$(cat final_tag_tmp)
           fi
-
+          
           if [ -z "$FINAL_TAG" ]; then
             echo "无法计算最终镜像 TAG"
             exit 1
           fi
-
+          
           echo "最终镜像 TAG: $FINAL_TAG"
           echo "final_tag=$FINAL_TAG" >> $GITHUB_OUTPUT
+
 
       ###########################################################################
       # 构建前检查
