@@ -276,9 +276,31 @@ jobs:
 
             # 下载 amd64 和 arm64 二进制
             for arch in amd64 arm64; do
-              asset=$(echo "$release" | jq -r ".assets[] | select(.name | contains(\"_linux_${arch}\")) | .browser_download_url")
+              # 定义每个架构的候选资产名称
+              case "$arch" in
+                amd64)
+                  candidates="_linux_amd64"
+                  ;;
+                arm64)
+                  candidates="_linux_arm64 _linux_aarch64"
+                  ;;
+                *)
+                  echo "未知架构: $arch"
+                  exit 1
+                  ;;
+              esac
+            
+              asset=""
+              for pattern in $candidates; do
+                asset=$(echo "$release" | jq -r ".assets[] | select(.name | contains(\"${pattern}\")) | .browser_download_url")
+                if [ -n "$asset" ] && [ "$asset" != "null" ]; then
+                  echo "[$key] 使用匹配到的资产: $pattern"
+                  break
+                fi
+              done
+            
               if [ -z "$asset" ] || [ "$asset" = "null" ]; then
-                echo "[$key] 未找到 ${arch} 对应的 linux 资产"
+                echo "[$key] 未找到 ${arch} 对应的 linux 资产（尝试过: $candidates）"
                 exit 1
               fi
 
